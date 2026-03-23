@@ -1,9 +1,7 @@
-"""
-Order & Checkout API Routes
-============================
-All endpoints follow RESTful conventions.
-Exception handlers map domain errors → HTTP status codes cleanly.
-"""
+# app/routes.py
+# Order & Checkout API Routes
+# All endpoints follow RESTful conventions.
+# Exception handlers map domain errors → HTTP status codes cleanly.
 
 import uuid
 from typing import Optional
@@ -31,10 +29,11 @@ from app.schemas import (
 router = APIRouter(prefix="/orders", tags=["Orders"])
 
 
-# ─────────────────────────────────────────────────────────────────
-# POST /orders/checkout  →  create_order()
-# ─────────────────────────────────────────────────────────────────
-
+# Checkout endpoint — moves items from the cart into a new order.
+# - Validates all items (price > 0, quantity > 0, no duplicates)
+# - Computes total price
+# - Creates order record + order_items atomically via stored procedure
+# - Returns the created order with all line items
 @router.post(
     "/checkout",
     response_model=OrderOut,
@@ -46,14 +45,6 @@ router = APIRouter(prefix="/orders", tags=["Orders"])
     },
 )
 def checkout(payload: CheckoutRequest, db: Session = Depends(get_db)):
-    """
-    **Checkout endpoint** — moves items from the cart into a new order.
-
-    - Validates all items (price > 0, quantity > 0, no duplicates)
-    - Computes total price
-    - Creates order record + order_items atomically via stored procedure
-    - Returns the created order with all line items
-    """
     try:
         order = service.create_order(db, payload)
         return order
@@ -65,10 +56,7 @@ def checkout(payload: CheckoutRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
-# ─────────────────────────────────────────────────────────────────
-# GET /orders/{order_id}  →  get_order()
-# ─────────────────────────────────────────────────────────────────
-
+# Fetch a specific order and all its line items by `order_id`.
 @router.get(
     "/{order_id}",
     response_model=OrderOut,
@@ -78,9 +66,6 @@ def checkout(payload: CheckoutRequest, db: Session = Depends(get_db)):
     },
 )
 def get_order(order_id: uuid.UUID, db: Session = Depends(get_db)):
-    """
-    Fetch a specific order and all its line items by `order_id`.
-    """
     try:
         return service.get_order(db, order_id)
     except OrderNotFoundError as e:
@@ -89,10 +74,10 @@ def get_order(order_id: uuid.UUID, db: Session = Depends(get_db)):
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
-# ─────────────────────────────────────────────────────────────────
-# GET /orders  →  list_orders()
-# ─────────────────────────────────────────────────────────────────
-
+# Order history endpoint — returns a paginated list of orders.
+# - Filter by `user_id` to get a specific user's order history
+# - Filter by `status` to show only orders in a lifecycle state
+# - Results are sorted newest-first
 @router.get(
     "",
     response_model=OrderListResponse,
@@ -102,21 +87,14 @@ def get_order(order_id: uuid.UUID, db: Session = Depends(get_db)):
     },
 )
 def list_orders(
-    user_id:   Optional[uuid.UUID]   = Query(None, description="Filter by user UUID"),
-    status:    Optional[OrderStatus] = Query(None, description="Filter by order status"),
-    page:      int                   = Query(1,    ge=1,  description="Page number (starts at 1)"),
-    page_size: int                   = Query(10,   ge=1, le=100, description="Items per page (max 100)"),
+    user_id: Optional[uuid.UUID] = Query(None, description="Filter by user UUID"),
+    status: Optional[OrderStatus] = Query(None, description="Filter by order status"),
+    page: int = Query(1, ge=1,  description="Page number (starts at 1)"),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page (max 100)"),
     db: Session = Depends(get_db),
 ):
-    """
-    **Order history endpoint** — returns a paginated list of orders.
-
-    - Filter by `user_id` to get a specific user's order history
-    - Filter by `status` to show only orders in a lifecycle state
-    - Results are sorted newest-first
-    """
     try:
-        result = service.list_orders(db, user_id=user_id, status=status, page=page, page_size=page_size)
+        result = service.list_orders(db,user_id=user_id,status=status,page=page,page_size=page_size)
         return result
     except InvalidOrderDataError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -124,10 +102,14 @@ def list_orders(
         raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
-# ─────────────────────────────────────────────────────────────────
-# PATCH /orders/{order_id}/status  →  update_order_status()
-# ─────────────────────────────────────────────────────────────────
-
+# Update order lifecycle status.
+# Valid transitions:
+# - `pending` → `confirmed` or `cancelled`
+# - `confirmed` → `processing` or `cancelled`
+# - `processing` → `shipped` or `cancelled`
+# - `shipped` → `delivered`
+# - `delivered` → (terminal, no further updates)
+# - `cancelled` → (terminal, no further updates)
 @router.patch(
     "/{order_id}/status",
     response_model=OrderOut,
@@ -139,20 +121,9 @@ def list_orders(
 )
 def update_order_status(
     order_id: uuid.UUID,
-    payload:  UpdateOrderStatusRequest,
+    payload: UpdateOrderStatusRequest,
     db: Session = Depends(get_db),
 ):
-    """
-    **Update order lifecycle status.**
-
-    Valid transitions:
-    - `pending` → `confirmed` or `cancelled`
-    - `confirmed` → `processing` or `cancelled`
-    - `processing` → `shipped` or `cancelled`
-    - `shipped` → `delivered`
-    - `delivered` → *(terminal, no further updates)*
-    - `cancelled` → *(terminal, no further updates)*
-    """
     try:
         return service.update_order_status(db, order_id, payload.status)
     except OrderNotFoundError as e:
